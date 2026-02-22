@@ -1,5 +1,5 @@
-use crate::{Vec2d, Vec3d, Command, Item};
-use std::{collections::HashMap, fmt, hash::Hash, os::raw, result};
+use crate::{Vec2d, Vec3d, Command, Item, Slice, Indexable, Trait, CdcError};
+use std::{collections::HashMap, fmt};
 
 
 /// Mirror constants from the Python JsonEncoder
@@ -54,12 +54,17 @@ impl From<&CdcValue> for CdcType {
             CdcValue::STRING(_) => CdcType::STRING,
             CdcValue::LIST(_) => CdcType::LIST,
             CdcValue::MAP(_) => CdcType::MAP,
+            CdcValue::SLICE(_) => CdcType::SLICE,
+            CdcValue::ITEM(_) => CdcType::ITEM,
+            CdcValue::INDEXABLE(_) => CdcType::INDEXABLE,
             CdcValue::COMMAND(_) => CdcType::COMMAND,
             CdcValue::CALLABLE(_) => CdcType::CALLABLE,
+            CdcValue::ERROR(_) => CdcType::ERROR,
+            CdcValue::TRAIT(_) => CdcType::TRAIT,
             CdcValue::VEC2D(_) => CdcType::VEC2D,
             CdcValue::VEC3D(_) => CdcType::VEC3D,
+            CdcValue::RESOURCE_ACCESS => CdcType::RESOURCE_ACCESS,
             CdcValue::BLOB(_) => CdcType::BLOB,
-            CdcValue::ITEM(_) => CdcType::ITEM,
         }
     }
 }
@@ -77,12 +82,17 @@ pub enum CdcValue{
     STRING(String) = 4,
     LIST(CdcList) = 5,
     MAP(CdcDict) = 6,
+    SLICE(Slice) = 7,
+    ITEM(Item) = 8,
+    INDEXABLE(Indexable) = 9,
+    COMMAND(Command) = 10,
     CALLABLE(CdcCallable) = 11,
+    ERROR(CdcError) = 12,
+    TRAIT(Trait) = 13,
     VEC2D(Vec2d) = 17,
     VEC3D(Vec3d) = 18,
-    COMMAND(Command) = 10,
+    RESOURCE_ACCESS = 19,
     BLOB(Vec<u8>) = 20,
-    ITEM(Item) = 8,
 }
 impl CdcValue {
     pub fn expect_bool(self) -> bool {
@@ -118,8 +128,17 @@ impl CdcValue {
     pub fn expect_blob(self) -> Vec<u8> {
         if let CdcValue::BLOB(b) = self {b} else {panic!("Expected BLOB, found {:?}", self);}
     }
+    pub fn expect_error(self) -> CdcError {
+        if let CdcValue::ERROR(b) = self {b} else {panic!("Expected ERROR, found {:?}", self);}
+    }
     pub fn expect_item(self) -> Item {
         if let CdcValue::ITEM(b) = self {b} else {panic!("Expected ITEM, found {:?}", self);}
+    }
+    pub fn expect_slice(self) -> Slice {
+        if let CdcValue::SLICE(b) = self {b} else {panic!("Expected SLICE, found {:?}", self);}
+    }
+    pub fn expect_indexable(self) -> Indexable {
+        if let CdcValue::INDEXABLE(b) = self {b} else {panic!("Expected INDEXABLE, found {:?}", self);}
     }
 }
 
@@ -204,6 +223,28 @@ impl CdcEncoder{
                     self.encode_value(buffer, value);
                 }
             }
+            CdcValue::SLICE(slice) => {
+                // Encode start value
+                if let Some(start) = &slice.start {
+                    self.encode_value(buffer, &CdcValue::INTEGER(*start));
+                } else {
+                    self.encode_value(buffer, &CdcValue::NONE);
+                }
+                // Encode stop value
+                if let Some(stop) = &slice.stop {
+                    self.encode_value(buffer, &CdcValue::INTEGER(*stop));
+                } else {
+                    self.encode_value(buffer, &CdcValue::NONE);
+                }
+            }
+            CdcValue::INDEXABLE(indexable) => {
+                // Encode item
+                self.encode_value(buffer, &CdcValue::ITEM(indexable.item.clone()));
+                // Encode token
+                CdcEncoder::encode_string(buffer, &indexable.token);
+                // Encode size
+                buffer.extend(&indexable.size.to_le_bytes());
+            }
             CdcValue::VEC3D(v) => {
                 buffer.extend(&v.x.to_le_bytes());
                 buffer.extend(&v.y.to_le_bytes());
@@ -229,12 +270,26 @@ impl CdcEncoder{
                 self.registeredc_callables.insert(raw_pointer, *func);
                 CdcEncoder::encode_string(buffer, &raw_pointer.to_string());
                 CdcEncoder::encode_string(buffer, &String::from("rust function"));
+            }
+            CdcValue::ERROR(error) => {
+                CdcEncoder::encode_string(buffer, &error.id);
+                CdcEncoder::encode_string(buffer, &error.text);
+                buffer.extend(&error.line.to_le_bytes());
             }  
             CdcValue::ITEM(item) => {
                 // Encode Item: id (string), category (i64), stage (i64)
                 CdcEncoder::encode_string(buffer, &item.id);
                 buffer.extend(&(item.category as i64).to_le_bytes());
                 buffer.extend(&(item.stage as i64).to_le_bytes());
+            }
+            CdcValue::TRAIT(trait_obj) => {
+                // Encode Trait: id (string), args (CdcList), kwargs (CdcDict)
+                CdcEncoder::encode_string(buffer, &trait_obj.id);
+                self.encode_value(buffer, &CdcValue::LIST(trait_obj.args.clone()));
+                self.encode_value(buffer, &CdcValue::MAP(trait_obj.kwargs.clone()));
+            }
+            CdcValue::RESOURCE_ACCESS => {
+                // No additional data for ResourceAccess
             }
         }
     }
@@ -306,6 +361,48 @@ impl CdcEncoder{
                 Ok(CdcValue::MAP(result_map))
                     
             }
+            x if x == CdcType::SLICE as u8 => {
+                let start = self.decode_value(buffer)?;
+                let stop = self.decode_value(buffer)?;
+                
+                let start_opt = if let CdcValue::NONE = start {
+                    None
+                } else if let CdcValue::INTEGER(val) = start {
+                    Some(val)
+                } else {
+                    return Err(DecodeError::UnknownType);
+                };
+                
+                let stop_opt = if let CdcValue::NONE = stop {
+                    None
+                } else if let CdcValue::INTEGER(val) = stop {
+                    Some(val)
+                } else {
+                    return Err(DecodeError::UnknownType);
+                };
+                
+                Ok(CdcValue::SLICE(Slice {
+                    start: start_opt,
+                    stop: stop_opt,
+                }))
+            }
+            x if x == CdcType::INDEXABLE as u8 => {
+                let item_value = self.decode_value(buffer)?;
+                let token = self.decode_string(buffer)?;
+                let size = self.decode_int(buffer)?;
+                
+                // Extract Item from the decoded value
+                let item = match item_value {
+                    CdcValue::ITEM(item) => item,
+                    _ => return Err(DecodeError::UnknownType),
+                };
+                
+                Ok(CdcValue::INDEXABLE(Indexable {
+                    item,
+                    token,
+                    size,
+                }))
+            }
             x if x == CdcType::VEC3D as u8 => {
                 if buffer.len() < 24 {
                     return Err(DecodeError::MissingData);
@@ -359,12 +456,41 @@ impl CdcEncoder{
                     Err(DecodeError::MissingFunction)
                 }
             }
+            x if x == CdcType::ERROR as u8 => {
+                let id = self.decode_string(buffer)?;
+                let text = self.decode_string(buffer)?;
+                let line = self.decode_int(buffer)?;
+                Ok(CdcValue::ERROR(CdcError { id, text, line }))
+            }
+            x if x == CdcType::TRAIT as u8 => {
+                // Decode Trait: id (string), args (CdcList), kwargs (CdcDict)
+                let id = self.decode_string(buffer)?;
+                let args_value = self.decode_value(buffer)?;
+                let kwargs_value = self.decode_value(buffer)?;
+                
+                // Extract LIST and MAP from decoded values
+                let args = match args_value {
+                    CdcValue::LIST(list) => list,
+                    _ => return Err(DecodeError::UnknownType),
+                };
+                
+                let kwargs = match kwargs_value {
+                    CdcValue::MAP(map) => map,
+                    _ => return Err(DecodeError::UnknownType),
+                };
+                
+                Ok(CdcValue::TRAIT(Trait { id, args, kwargs }))
+            }
             x if x == CdcType::ITEM as u8 => {
                 // Decode Item: id (string), category (i64), stage (i64)
                 let id = self.decode_string(buffer)?;
                 let category = self.decode_int(buffer)? as i32;
                 let stage = self.decode_int(buffer)? as i32;
                 Ok(CdcValue::ITEM(Item { id, category, stage }))
+            }
+            x if x == CdcType::RESOURCE_ACCESS as u8 => {
+                // ResourceAccess has no additional data
+                Ok(CdcValue::RESOURCE_ACCESS)
             }
             _ => Err(DecodeError::UnknownType),
         }
@@ -459,6 +585,87 @@ mod tests {
     }
  */
     #[test]
+    fn test_slice_encoding_matches_python() {
+        let mut encoder = CdcEncoder::new();
+        let slice = Slice {
+            start: Some(1),
+            stop: Some(10),
+        };
+        let value = CdcValue::SLICE(slice);
+        let encoded = encoder.encode(value);
+        let expected = load_expected("slice");
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn test_slice_encoding_roundtrip() {
+        let mut encoder = CdcEncoder::new();
+        let original_slice = Slice {
+            start: Some(2),
+            stop: Some(20),
+        };
+        let value = CdcValue::SLICE(original_slice.clone());
+        let encoded = encoder.encode(value);
+        
+        // Decode the encoded value
+        let mut slice = encoded.as_slice();
+        let decoded = encoder.decode_value(&mut slice).unwrap();
+        
+        if let CdcValue::SLICE(decoded_slice) = decoded {
+            assert_eq!(decoded_slice.start, original_slice.start);
+            assert_eq!(decoded_slice.stop, original_slice.stop);
+        } else {
+            panic!("Expected SLICE, found {:?}", decoded);
+        }
+    }
+
+    #[test]
+    fn test_indexable_encoding_matches_python() {
+        let mut encoder = CdcEncoder::new();
+        let indexable = Indexable {
+            item: Item {
+                id: "item123".to_string(),
+                category: 42,
+                stage: 7,
+            },
+            token: "test_token".to_string(),
+            size: 100,
+        };
+        let value = CdcValue::INDEXABLE(indexable);
+        let encoded = encoder.encode(value);
+        let expected = load_expected("indexable");
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn test_indexable_encoding_roundtrip() {
+        let mut encoder = CdcEncoder::new();
+        let original_indexable = Indexable {
+            item: Item {
+                id: "test_item".to_string(),
+                category: 99,
+                stage: 3,
+            },
+            token: "roundtrip_token".to_string(),
+            size: 250,
+        };
+        let value = CdcValue::INDEXABLE(original_indexable.clone());
+        let encoded = encoder.encode(value);
+        
+        // Decode the encoded value
+        let mut slice = encoded.as_slice();
+        let decoded = encoder.decode_value(&mut slice).unwrap();
+        
+        if let CdcValue::INDEXABLE(decoded_indexable) = decoded {
+            assert_eq!(decoded_indexable.item, original_indexable.item);
+            assert_eq!(decoded_indexable.token, original_indexable.token);
+            assert_eq!(decoded_indexable.size, original_indexable.size);
+        } else {
+            panic!("Expected INDEXABLE, found {:?}", decoded);
+        }
+    }
+
+    #[test]
     fn test_vec2d_encoding_matches_python() {
         let mut encoder = CdcEncoder::new();
         let value = CdcValue::VEC2D(Vec2d { x: 1.5, y: 2.5 });
@@ -509,6 +716,94 @@ mod tests {
         // Also test decode roundtrip
         let mut slice = encoded.as_slice();
         let decoded = encoder.decode_value(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_resource_access_encoding_matches_python() {
+        let mut encoder = CdcEncoder::new();
+        let value = CdcValue::RESOURCE_ACCESS;
+        let encoded = encoder.encode(value);
+        let expected = load_expected("resource_access");
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn test_resource_access_encoding_roundtrip() {
+        let mut encoder = CdcEncoder::new();
+        let value = CdcValue::RESOURCE_ACCESS;
+        let encoded = encoder.encode(value.clone());
+        
+        // Decode the encoded value
+        let mut slice = encoded.as_slice();
+        let decoded = encoder.decode_value(&mut slice).unwrap();
+        
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_error_encoding_matches_python() {
+        let mut encoder = CdcEncoder::new();
+        let error = CdcError {
+            id: "error_id_123".to_string(),
+            text: "An error occurred".to_string(),
+            line: 42,
+        };
+        let value = CdcValue::ERROR(error);
+        let encoded = encoder.encode(value);
+        let expected = load_expected("error");
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn test_error_encoding_roundtrip() {
+        let mut encoder = CdcEncoder::new();
+        let original_error = CdcError {
+            id: "test_error_id".to_string(),
+            text: "Test error message".to_string(),
+            line: 99,
+        };
+        let value = CdcValue::ERROR(original_error.clone());
+        let encoded = encoder.encode(value);
+        
+        // Decode the encoded value
+        let mut slice = encoded.as_slice();
+        let decoded = encoder.decode_value(&mut slice).unwrap();
+        
+        if let CdcValue::ERROR(decoded_error) = decoded {
+            assert_eq!(decoded_error.id, original_error.id);
+            assert_eq!(decoded_error.text, original_error.text);
+            assert_eq!(decoded_error.line, original_error.line);
+        } else {
+            panic!("Expected ERROR, found {:?}", decoded);
+        }
+    }
+
+    #[test]
+    fn test_trait_encoding_roundtrip() {
+        let mut encoder = CdcEncoder::new();
+        let trait_obj = Trait {
+            id: "Tom::Test::SimpleType".to_string(),
+            args: vec![
+                CdcValue::INTEGER(1),
+                CdcValue::INTEGER(2),
+                CdcValue::STRING("test".to_string()),
+            ],
+            kwargs: {
+                let mut map = HashMap::new();
+                map.insert("key".to_string(), CdcValue::STRING("value".to_string()));
+                map.insert("num".to_string(), CdcValue::INTEGER(42));
+                map
+            },
+        };
+        let value = CdcValue::TRAIT(trait_obj);
+        let encoded = encoder.encode(value.clone());
+        
+        // Decode the encoded value
+        let mut slice = encoded.as_slice();
+        let decoded = encoder.decode_value(&mut slice).unwrap();
+        
+        // Compare the decoded value with the original
         assert_eq!(decoded, value);
     }
 

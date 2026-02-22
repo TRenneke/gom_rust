@@ -1,10 +1,11 @@
 use tungstenite::{Message, connect, stream::MaybeTlsStream, WebSocket, Error};
-use std::{collections::HashMap, mem::Discriminant, net::TcpStream as TCPStream};
+use std::{collections::HashMap, net::TcpStream as TCPStream};
 use tungstenite::Bytes;
 use uuid::Uuid;
 use crate::encoding::{self as enc, CdcEncoder};
 
 
+#[allow(non_camel_case_types)]
 pub enum Request{
     API = 1,
     COMMAND = 2,
@@ -139,16 +140,16 @@ impl From<connection::reply::Error> for ConnectionError{
         }
     }
 }
-pub struct Conntection {
+pub struct Connection {
     socket: WebSocket<MaybeTlsStream<TCPStream>>,
     api_acces_key: String,
     replies: HashMap<Uuid, connection::reply::Reply>,
     encoder: enc::CdcEncoder,
 }
 
-impl Conntection {
+impl Connection {
     pub fn init(uri: &str, api_key: String) -> Result<Self, Error> {
-        let (mut socket, response) = connect(uri)?;
+        let (socket, _response) = connect(uri)?;
         Ok(Self { socket: socket, api_acces_key: api_key, replies: HashMap::new(), encoder: CdcEncoder::new() })
     }
 

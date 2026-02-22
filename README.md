@@ -2,41 +2,35 @@
 
 # Zeiss Inspect API Rust
 
-This project provides a Rust library that can be used as a Python extension via PyO3. It includes a simple "Hello World" function that demonstrates how to expose Rust functionality to Python.
+This project provides a Rust implementation of the Zeiss Inspect API client library. It enables communication with Zeiss Inspect AUTOMATION servers using the GOM (Zeiss Object Model) protocol over WebSocket connections.
 
 ## Project Structure
 
 - `Cargo.toml`: Configuration file for the Rust project.
-- `pyproject.toml`: Python packaging configuration.
 - `README.md`: Documentation for the project.
-- `.gitignore`: Specifies files to be ignored by Git.
 - `src/lib.rs`: Contains the main Rust library code.
-- `tests/hello.rs`: Contains tests for the "Hello World" function.
+- `src/network.rs`: WebSocket communication and protocol handling.
+- `src/encoding.rs`: GOM protocol encoding and decoding.
+- `tests/`: Test suite for the library.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Rust and Cargo installed on your machine.
-- Python installed (preferably Python 3.6 or later).
-- `maturin` for building the Python package.
 
 ### Building the Project
 
-To build the Rust library and create the Python extension, run the following command in the project root:
+To build the Rust library, run the following command in the project root:
 
 ```bash
-maturin develop
+cargo build
 ```
 
-### Using the Library in Python
+For a release build with optimizations:
 
-Once the library is built, you can use it in your Python code as follows:
-
-```python
-import zeiss_inspect_api_rust
-
-print(zeiss_inspect_api_rust.hello_world())
+```bash
+cargo build --release
 ```
 
 ### Running Tests
