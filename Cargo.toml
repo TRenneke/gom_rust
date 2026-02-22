@@ -1,0 +1,14 @@
+[package]
+name = "zeiss_inspect_api_rust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "zeiss_inspect_api_rust"
+crate-type = ["lib"]
+
+[dependencies]
+tungstenite = {version = "0.28.0"}
+uuid = {version = "1.19.0", features = ["v4"]}
+lazy_static = "1.4"
+log = "0.4"

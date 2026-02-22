@@ -1,0 +1,1 @@
+The library doesn't need to handle multiple threads as the server side can't handle getting called async

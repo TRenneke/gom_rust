@@ -1,0 +1,10 @@
+[tool.poetry]
+name = "zeiss_inspect_api_rust"
+version = "0.1.0"
+description = "A Rust library that can be called from Python using PyO3."
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+
+[build-system]
+requires = ["setuptools", "wheel", "pyo3"]
+build-backend = "setuptools.build_meta"
