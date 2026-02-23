@@ -143,6 +143,7 @@ impl From<connection::reply::Error> for ConnectionError{
 pub struct Connection {
     socket: WebSocket<MaybeTlsStream<TCPStream>>,
     api_acces_key: String,
+    interpreter_id: String,
     replies: HashMap<Uuid, connection::reply::Reply>,
     encoder: enc::CdcEncoder,
 }
@@ -150,10 +151,19 @@ pub struct Connection {
 impl Connection {
     pub fn init(uri: &str, api_key: String) -> Result<Self, Error> {
         let (socket, _response) = connect(uri)?;
-        Ok(Self { socket: socket, api_acces_key: api_key, replies: HashMap::new(), encoder: CdcEncoder::new() })
+        Ok(Self { 
+            socket: socket, 
+            api_acces_key: api_key, 
+            interpreter_id: Uuid::new_v4().to_string(),
+            replies: HashMap::new(), 
+            encoder: CdcEncoder::new() 
+        })
     }
 
     pub fn register(&mut self, interpreter_id: &str, filename: &str) -> Result<enc::CdcValue, ConnectionError> {
+        // Store the interpreter_id for future use in all messages
+        self.interpreter_id = interpreter_id.to_string();
+        
         let mut params = std::collections::HashMap::new();
         params.insert("id".to_string(), enc::CdcValue::STRING(interpreter_id.to_string()));
         params.insert("file".to_string(), enc::CdcValue::STRING(filename.to_string()));
@@ -171,6 +181,7 @@ impl Connection {
         map.insert(connection::attribute::ID.into(), enc::CdcValue::STRING(request_id.to_string()));
         map.insert(connection::attribute::VALUE.into(), enc::CdcValue::INTEGER(command as i64));
         map.insert(connection::attribute::PARAMS.into(), enc::CdcValue::MAP(params));
+        map.insert(connection::attribute::INTERPRETER.into(), enc::CdcValue::STRING(self.interpreter_id.clone()));
         let _ = self.send(enc::CdcValue::MAP(map)).expect("Could not send the request!");
 
         while !(self.replies.contains_key(&request_id)){

@@ -6,12 +6,16 @@ use std::cell::RefCell;
 
 mod encoding;
 mod network;
+mod types;
 
 use encoding::{CdcValue, CdcList, CdcDict};
 use network::{Connection};
 use uuid;
 
 use std::env;
+
+// Re-export types module functions publicly
+pub use types::{register_type, is_type_registered, get_type_name, get_all_registered_types, clear_type_cache, clear_all_caches};
 
 thread_local! {
     static GOM_CONNECTION: RefCell<Option<Connection>> = RefCell::new(None);
@@ -68,7 +72,16 @@ pub fn initialize_gom_connection() {
             Ok(config) => {
                 match Connection::init(&config.server_url, config.api_key) {
                     Ok(mut conn) => {
-                        match conn.register(&config.interpreter_id, "zeiss_inspect_api_rust") {
+                        // Get the current executable path to use as the file identifier
+                        let file_path = std::env::current_exe()
+                            .ok()
+                            .and_then(|path| {
+                                path.to_str()
+                                    .map(|s| s.replace("\\", "/"))
+                            })
+                            .unwrap_or_else(|| "zeiss_inspect_api_rust".to_string());
+                        
+                        match conn.register(&config.interpreter_id, &file_path) {
                             Ok(_) => {
                                 GOM_CONNECTION.with(|conn_cell| {
                                     *conn_cell.borrow_mut() = Some(conn);
@@ -516,6 +529,53 @@ pub struct Trait {
     pub args: CdcList,
     /// Keyword arguments (map of values).
     pub kwargs: CdcDict,
+}
+
+/// Represents a generic object instance without specialized script type interface.
+///
+/// Objects are used when the GOM server sends instances of types that don't have
+/// dedicated Rust representations. The attributes are fetched from the server via
+/// lazy resolution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Object {
+    /// The type identifier of this object
+    pub type_id: String,
+    /// String representation of the object
+    pub repr: String,
+    /// Object attributes as key-value pairs
+    pub attributes: HashMap<String, CdcValue>,
+}
+
+/// Represents a data array container.
+///
+/// Arrays are used to represent structured data that can be accessed via indexing.
+/// They include information about the project and item they belong to, along with
+/// shape and transformation information.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Array {
+    /// The project this array belongs to
+    pub project: Box<CdcValue>,
+    /// The item this array is part of
+    pub item: Box<CdcValue>,
+    /// The key/token name for the array
+    pub key: String,
+    /// Index path for nested access
+    pub index: Vec<i64>,
+    /// Whether this is selected data
+    pub selected: bool,
+    /// Optional transformation data
+    pub transformation: Option<Box<CdcValue>>,
+}
+
+/// Represents a DataInterface::Package reference.
+///
+/// Packages are used to reference package objects from the GOM data interface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Package {
+    /// Package reference/handle
+    pub reference: String,
+    /// Package metadata
+    pub metadata: CdcDict,
 }
 
 #[cfg(test)]

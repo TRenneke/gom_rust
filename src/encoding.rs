@@ -1,4 +1,4 @@
-use crate::{Vec2d, Vec3d, Command, Item, Slice, Indexable, Trait, CdcError};
+use crate::{Vec2d, Vec3d, Command, Item, Slice, Indexable, Trait, CdcError, Object, Array, Package};
 use std::{collections::HashMap, fmt};
 
 
@@ -61,6 +61,9 @@ impl From<&CdcValue> for CdcType {
             CdcValue::CALLABLE(_) => CdcType::CALLABLE,
             CdcValue::ERROR(_) => CdcType::ERROR,
             CdcValue::TRAIT(_) => CdcType::TRAIT,
+            CdcValue::OBJECT(_) => CdcType::OBJECT,
+            CdcValue::ARRAY(_) => CdcType::ARRAY,
+            CdcValue::PACKAGE(_) => CdcType::PACKAGE,
             CdcValue::VEC2D(_) => CdcType::VEC2D,
             CdcValue::VEC3D(_) => CdcType::VEC3D,
             CdcValue::RESOURCE_ACCESS => CdcType::RESOURCE_ACCESS,
@@ -89,6 +92,9 @@ pub enum CdcValue{
     CALLABLE(CdcCallable) = 11,
     ERROR(CdcError) = 12,
     TRAIT(Trait) = 13,
+    OBJECT(Object) = 14,
+    ARRAY(Array) = 15,
+    PACKAGE(Package) = 16,
     VEC2D(Vec2d) = 17,
     VEC3D(Vec3d) = 18,
     RESOURCE_ACCESS = 19,
@@ -139,6 +145,21 @@ impl CdcValue {
     }
     pub fn expect_indexable(self) -> Indexable {
         if let CdcValue::INDEXABLE(b) = self {b} else {panic!("Expected INDEXABLE, found {:?}", self);}
+    }
+    pub fn expect_trait(self) -> Trait {
+        if let CdcValue::TRAIT(b) = self {b} else {panic!("Expected TRAIT, found {:?}", self);}
+    }
+    pub fn expect_object(self) -> Object {
+        if let CdcValue::OBJECT(obj) = self { obj } 
+        else { panic!("Expected OBJECT, found {:?}", self); }
+    }
+    pub fn expect_array(self) -> Array {
+        if let CdcValue::ARRAY(arr) = self { arr } 
+        else { panic!("Expected ARRAY, found {:?}", self); }
+    }
+    pub fn expect_package(self) -> Package {
+        if let CdcValue::PACKAGE(pkg) = self { pkg } 
+        else { panic!("Expected PACKAGE, found {:?}", self); }
     }
 }
 
@@ -287,6 +308,53 @@ impl CdcEncoder{
                 CdcEncoder::encode_string(buffer, &trait_obj.id);
                 self.encode_value(buffer, &CdcValue::LIST(trait_obj.args.clone()));
                 self.encode_value(buffer, &CdcValue::MAP(trait_obj.kwargs.clone()));
+            }
+            CdcValue::OBJECT(obj) => {
+                // Type ID (string)
+                CdcEncoder::encode_string(buffer, &obj.type_id);
+                // Repr (string)
+                CdcEncoder::encode_string(buffer, &obj.repr);
+                // Attributes count (i64)
+                let attr_count = obj.attributes.len() as i64;
+                buffer.extend(&attr_count.to_le_bytes());
+                // Encode each attribute
+                for (key, value) in &obj.attributes {
+                    CdcEncoder::encode_string(buffer, key);
+                    self.encode_value(buffer, value);
+                }
+            }
+            CdcValue::ARRAY(arr) => {
+                // Encode project
+                self.encode_value(buffer, &arr.project);
+                // Encode item
+                self.encode_value(buffer, &arr.item);
+                // Encode key
+                CdcEncoder::encode_string(buffer, &arr.key);
+                // Encode index path
+                let index_len = arr.index.len() as i64;
+                buffer.extend(&index_len.to_le_bytes());
+                for idx in &arr.index {
+                    buffer.extend(&idx.to_le_bytes());
+                }
+                // Encode selected flag
+                buffer.push(if arr.selected { 1 } else { 0 });
+                // Encode transformation (optional)
+                match &arr.transformation {
+                    Some(trans) => {
+                        buffer.push(1);
+                        self.encode_value(buffer, trans);
+                    }
+                    None => buffer.push(0),
+                }
+            }
+            CdcValue::PACKAGE(pkg) => {
+                CdcEncoder::encode_string(buffer, &pkg.reference);
+                let metadata_count = pkg.metadata.len() as i64;
+                buffer.extend(&metadata_count.to_le_bytes());
+                for (key, value) in &pkg.metadata {
+                    CdcEncoder::encode_string(buffer, key);
+                    self.encode_value(buffer, value);
+                }
             }
             CdcValue::RESOURCE_ACCESS => {
                 // No additional data for ResourceAccess
@@ -491,6 +559,63 @@ impl CdcEncoder{
             x if x == CdcType::RESOURCE_ACCESS as u8 => {
                 // ResourceAccess has no additional data
                 Ok(CdcValue::RESOURCE_ACCESS)
+            }
+            x if x == CdcType::OBJECT as u8 => {
+                let type_id = self.decode_string(buffer)?;
+                let repr = self.decode_string(buffer)?;
+                let attr_count = self.decode_int(buffer)? as usize;
+                
+                let mut attributes = HashMap::new();
+                for _ in 0..attr_count {
+                    let key = self.decode_string(buffer)?;
+                    let value = self.decode_value(buffer)?;
+                    attributes.insert(key, value);
+                }
+                
+                Ok(CdcValue::OBJECT(Object { type_id, repr, attributes }))
+            }
+            x if x == CdcType::ARRAY as u8 => {
+                let project = self.decode_value(buffer)?;
+                let item = self.decode_value(buffer)?;
+                let key = self.decode_string(buffer)?;
+                
+                let index_len = self.decode_int(buffer)? as usize;
+                let mut index = Vec::new();
+                for _ in 0..index_len {
+                    index.push(self.decode_int(buffer)?);
+                }
+                
+                if buffer.is_empty() {
+                    return Err(DecodeError::MissingData);
+                }
+                let selected = buffer[0] != 0;
+                *buffer = &buffer[1..];
+                
+                if buffer.is_empty() {
+                    return Err(DecodeError::MissingData);
+                }
+                let transformation = if buffer[0] != 0 {
+                    *buffer = &buffer[1..];
+                    Some(Box::new(self.decode_value(buffer)?))
+                } else {
+                    *buffer = &buffer[1..];
+                    None
+                };
+                
+                Ok(CdcValue::ARRAY(Array { project: Box::new(project), item: Box::new(item), key, index, selected, transformation }))
+            }
+            x if x == CdcType::PACKAGE as u8 => {
+                let reference = self.decode_string(buffer)?;
+                let metadata_count = self.decode_int(buffer)? as usize;
+                
+                let mut metadata = HashMap::new();
+                for _ in 0..metadata_count {
+                    let key = self.decode_string(buffer)?;
+                    let value = self.decode_value(buffer)?;
+                    metadata.insert(key, value);
+                }
+                
+                Ok(CdcValue::PACKAGE(Package { reference, metadata }))
             }
             _ => Err(DecodeError::UnknownType),
         }
